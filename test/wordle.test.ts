@@ -1,81 +1,80 @@
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 import { matchGuess } from '../src/wordle';
-import { match } from 'node:assert';
 
-// Recitation Part 1: follow along with your TA, filling in the todos below.
-// Problem set Task 1: keep adding properties until `npm run mutants:wordle`
-// kills every mutant. Read the spec in src/wordle/matchGuess.ts.
-//
-// Label every property with its pattern, on the line above its `it(`:
-//   // Pattern: invariant. The result always has exactly five colors.
-// (invariant, algebraic, metamorphic, differential, or conditional)
+const wordFrom = (letters: string) =>
+  fc.array(fc.constantFrom(...letters), { minLength: 5, maxLength: 5 }).map(cs => cs.join(''));
+const word = wordFrom('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+// A small alphabet makes repeated letters common enough to exercise allocation.
+const repeatedWord = wordFrom('ABC');
 
-const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-
-
-const wordFrom = (letters: string) => 
-  fc.array(fc.constantFrom(...letters), {minLength: 5, maxLength: 5}).map(cs => cs.join(''));
-const word = wordFrom(ALPHABET)
-
-// Step 1: a generator for five-letter uppercase words.
-// const word = ...
-
-
-
-
-describe ('matchguess', () => {
-
-  it('returns exactly five colors', () => {
-    fc.assert(
-      fc.property(word, word, (secret, guess) => {
-        expect(matchGuess(secret, guess)).toHaveLength(5)
-      }),
-    )
-  })
-
-  it('returns only green, black or yellow', () => {
-    fc.assert(
-      fc.property(word, word, (secret, guess) => {
-        for (const c of matchGuess(secret, guess)) expect(['G', 'Y', 'B']).toContain(c);
-      }),
-    )
-  })
-
-  it('secret gives al greens', () => {
-    fc.assert(
-      fc.property(word, w => {
-        expect(matchGuess(w, w)).toEqual(['G', 'G', 'G', 'G', 'G'])
-      }),
-    )
-  })
-
-
-  it('number of letters is the same', () => {
-    fc.assert(
-      fc.property(word, word, (secret, guess) => {
-        const res = matchGuess(secret, guess)
-        for (const letter of new Set(guess)) {
-          const credited = [...guess].filter((c, i) => c === letter && res[i] !== 'B').length;
-          const inSecret = [...secret].filter(c => c === letter).length
-          expect(credited).toBeLessThanOrEqual(inSecret)
-        }
-
-        
-        for (const c of matchGuess(secret, guess)) expect(['G', 'Y', 'B']).toContain(c);
-      }),
-    )
-  })
-
-  
-});
-
-
-
+// Independent specification: reserve all exact matches before allocating
+// remaining occurrences to unmatched guesses from left to right.
+function expectedColors(secret: string, guess: string): string[] {
+  const remaining = [...secret];
+  const result = Array<string>(5).fill('B');
+  for (let i = 0; i < 5; i++) {
+    if (guess[i] === secret[i]) {
+      result[i] = 'G';
+      remaining[i] = '';
+    }
+  }
+  for (let i = 0; i < 5; i++) {
+    if (result[i] === 'G') continue;
+    const index = remaining.indexOf(guess[i]);
+    if (index !== -1) {
+      result[i] = 'Y';
+      remaining[index] = '';
+    }
+  }
+  return result;
+}
 
 describe('matchGuess', () => {
-  it.todo('returns exactly five colors');
-  it.todo('only uses the colors G, Y, B');
-  it.todo('guessing the secret gives all greens');
-  it.todo('never credits a letter more times than the secret contains it');
+  // Pattern: invariant. The result has one valid color per position.
+  it('returns exactly five valid colors', () => {
+    fc.assert(fc.property(word, word, (secret, guess) => {
+      const colors = matchGuess(secret, guess);
+      expect(colors).toHaveLength(5);
+      for (const color of colors) expect(['G', 'Y', 'B']).toContain(color);
+    }));
+  });
+
+  // Pattern: conditional. An identical guess is entirely green.
+  it('gives all greens when the guess equals the secret', () => {
+    fc.assert(fc.property(word, secret => {
+      expect(matchGuess(secret, secret)).toEqual(['G', 'G', 'G', 'G', 'G']);
+    }));
+  });
+
+  // Pattern: invariant. Each letter is credited at most as often as it appears in the secret.
+  it('never overcredits a letter', () => {
+    fc.assert(fc.property(repeatedWord, repeatedWord, (secret, guess) => {
+      const colors = matchGuess(secret, guess);
+      for (const letter of new Set(guess)) {
+        const credited = [...guess].filter((c, i) => c === letter && colors[i] !== 'B').length;
+        expect(credited).toBeLessThanOrEqual([...secret].filter(c => c === letter).length);
+      }
+    }));
+  });
+
+  // Pattern: differential. Exact matches take priority, then remaining letters are used left to right.
+  it('matches the specified allocation of repeated letters', () => {
+    fc.assert(fc.property(repeatedWord, repeatedWord, (secret, guess) => {
+      expect(matchGuess(secret, guess)).toEqual(expectedColors(secret, guess));
+    }));
+  });
+
+  // Pattern: conditional. Invalid words are rejected in either argument.
+  it('rejects invalid words', () => {
+    const invalid = fc.oneof(
+      fc.string({ maxLength: 4 }),
+      fc.string({ minLength: 6, maxLength: 12 }),
+      fc.constantFrom('abcde', 'AB CD', 'ABCDE\n', '12345'),
+    );
+    fc.assert(fc.property(word, invalid, (valid, bad) => {
+      expect(() => matchGuess(valid, bad)).toThrow(RangeError);
+      expect(() => matchGuess(bad, valid)).toThrow(RangeError);
+    }));
+  });
 });
